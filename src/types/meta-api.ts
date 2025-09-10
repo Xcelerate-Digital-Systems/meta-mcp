@@ -133,6 +133,8 @@ export interface AdInsights {
     action_type: string;
     value: string;
   }>;
+  lead_count?: number;
+  cost_per_lead?: string;
 }
 
 export interface CustomAudience {

@@ -379,61 +379,119 @@ export class MetaApiClient {
 
   // Insights Methods
   async getInsights(
-    objectId: string,
-    params: {
-      level?: "account" | "campaign" | "adset" | "ad";
-      date_preset?: string;
-      time_range?: { since: string; until: string };
-      fields?: string[];
-      breakdowns?: string[];
-      limit?: number;
-      after?: string;
-    } = {}
-  ): Promise<PaginatedResult<AdInsights>> {
-    const queryParams: Record<string, any> = {
-      fields:
-        params.fields?.join(",") ||
-        "impressions,clicks,spend,reach,frequency,ctr,cpc,cpm,actions,cost_per_action_type",
-      ...params,
-    };
+  objectId: string,
+  params: {
+    level?: "account" | "campaign" | "adset" | "ad";
+    date_preset?: string;
+    time_range?: { since: string; until: string };
+    fields?: string[];
+    breakdowns?: string[];
+    limit?: number;
+    after?: string;
+  } = {}
+): Promise<PaginatedResult<AdInsights>> {
+  console.log("=== INSIGHTS DEBUG ===");
+  console.log("Object ID:", objectId);
+  console.log("Level:", params.level);
+  
+  const queryParams: Record<string, any> = {
+    fields:
+      params.fields?.join(",") ||
+      "impressions,clicks,spend,reach,frequency,ctr,cpc,cpm,actions,cost_per_action_type",
+    level: params.level || "campaign",  // ✅ Add missing level
+    limit: params.limit || 25,
+    date_preset: params.date_preset || "last_7d",
+  };
 
-    if (params.time_range) {
-      queryParams.time_range = params.time_range;
+  // ✅ Handle time_range properly  
+  if (params.time_range) {
+    queryParams.time_range = params.time_range;
+    delete queryParams.date_preset;
+  }
+
+  // ✅ Add breakdowns and pagination
+  if (params.breakdowns?.length) {
+    queryParams.breakdowns = params.breakdowns;
+  }
+  if (params.after) {
+    queryParams.after = params.after;
+  }
+
+  // ✅ Smart endpoint selection (follows existing patterns)
+  let endpoint: string;
+  let accountContext: string | undefined;
+
+  if (params.level === "campaign" || (!params.level && objectId.length > 15)) {
+    // For campaigns - try account-level insights with filtering
+    try {
+      const campaign = await this.getCampaign(objectId);
+      const accountId = this.auth.getAccountId(campaign.account_id);
+      
+      queryParams.filtering = JSON.stringify([{
+        field: "campaign.id",
+        operator: "IN", 
+        value: [objectId]
+      }]);
+      
+      endpoint = `${accountId}/insights`;
+      accountContext = accountId;
+      console.log("Using account insights with campaign filter");
+    } catch (error) {
+      console.log("Fallback to direct campaign insights");
+      endpoint = `${objectId}/insights`;
     }
-
-    const query = this.buildQueryString(queryParams);
-    const response = await this.makeRequest<MetaApiResponse<AdInsights>>(
-      `${objectId}/insights?${query}`
-    );
-
-    return PaginationHelper.parsePaginatedResponse(response);
+  } else {
+    // For ads/adsets - direct insights
+    endpoint = `${objectId}/insights`;
   }
 
-  // Custom Audience Methods
-  async getCustomAudiences(
-    accountId: string,
-    params: PaginationParams & { fields?: string[] } = {}
-  ): Promise<PaginatedResult<CustomAudience>> {
-    const formattedAccountId = this.auth.getAccountId(accountId);
-    const { fields, ...paginationParams } = params;
+  console.log("Final endpoint:", endpoint);
+  console.log("======================");
 
-    const queryParams: Record<string, any> = {
-      fields:
-        fields?.join(",") ||
-        "id,name,description,subtype,approximate_count,data_source,retention_days,creation_time,operation_status",
-      ...paginationParams,
-    };
+  const query = this.buildQueryString(queryParams);
+  const response = await this.makeRequest<MetaApiResponse<AdInsights>>(
+    `${endpoint}?${query}`,
+    "GET",
+    null,
+    accountContext
+  );
 
-    const query = this.buildQueryString(queryParams);
-    const response = await this.makeRequest<MetaApiResponse<CustomAudience>>(
-      `${formattedAccountId}/customaudiences?${query}`,
-      "GET",
-      null,
-      formattedAccountId
-    );
+  // ✅ Process lead data
+  const processedData = response.data?.map(insight => {
+    const processed = { ...insight };
+    
+    // Extract lead metrics
+    if (insight.actions) {
+      const leadActions = insight.actions.filter(action => 
+        action.action_type === "lead" || 
+        action.action_type === "complete_registration"
+      );
+      if (leadActions.length) {
+        processed.lead_count = leadActions.reduce((sum, action) => 
+          sum + parseFloat(action.value || "0"), 0
+        );
+      }
+    }
+    
+    // Extract cost per lead
+    if (insight.cost_per_action_type) {
+      const leadCosts = insight.cost_per_action_type.filter(cost => 
+        cost.action_type === "lead" || 
+        cost.action_type === "complete_registration"
+      );
+      if (leadCosts.length) {
+        processed.cost_per_lead = leadCosts[0].value;
+      }
+    }
+    
+    return processed;
+  }) || [];
 
-    return PaginationHelper.parsePaginatedResponse(response);
-  }
+  return PaginationHelper.parsePaginatedResponse({
+    ...response,
+    data: processedData
+  });
+}
 
   async createCustomAudience(
     accountId: string,

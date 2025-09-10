@@ -9,12 +9,12 @@ import { MetaApiClient } from "./meta-client.js";
 import { AuthManager } from "./utils/auth.js";
 import { registerCampaignTools } from "./tools/campaigns.js";
 import { registerAnalyticsTools } from "./tools/analytics.js";
-import { registerAudienceTools } from "./tools/audiences.js";
+//import { registerAudienceTools } from "./tools/audiences.js";
 import { registerCreativeTools } from "./tools/creatives.js";
 import { registerOAuthTools } from "./tools/oauth.js";
 import { registerCampaignResources } from "./resources/campaigns.js";
 import { registerInsightsResources } from "./resources/insights.js";
-import { registerAudienceResources } from "./resources/audiences.js";
+//import { registerAudienceResources } from "./resources/audiences.js";
 
 async function main() {
   try {
@@ -83,7 +83,7 @@ async function main() {
     console.error("   ✅ Campaign tools registered");
     registerAnalyticsTools(server, metaClient);
     console.error("   ✅ Analytics tools registered");
-    registerAudienceTools(server, metaClient);
+    //registerAudienceTools(server, metaClient);
     console.error("   ✅ Audience tools registered");
     registerCreativeTools(server, metaClient);
     console.error("   ✅ Creative tools registered");
@@ -96,7 +96,7 @@ async function main() {
     console.error("   ✅ Campaign resources registered");
     registerInsightsResources(server, metaClient);
     console.error("   ✅ Insights resources registered");
-    registerAudienceResources(server, metaClient);
+    //registerAudienceResources(server, metaClient);
     console.error("   ✅ Audience resources registered");
 
     // Add account discovery tool
