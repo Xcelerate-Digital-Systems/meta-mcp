@@ -1,48 +1,44 @@
-import { NextApiRequest, NextApiResponse } from 'next';
-import { UserAuthManager } from '../../src/utils/user-auth.js';
+import type { VercelRequest, VercelResponse } from "@vercel/node";
+import { UserAuthManager } from "../../src/utils/user-auth.js";
+import { authenticateRequest } from "../../src/utils/session-request.js";
+import { sendJson } from "../../src/utils/http.js";
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'Method not allowed' });
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET");
+    return sendJson(res, 405, { success: false, error: "Method not allowed" });
   }
 
   try {
-    // Authenticate user
-    const authHeader = req.headers.authorization;
-    const user = await UserAuthManager.authenticateUser(authHeader);
+    const { session } = await authenticateRequest(req);
 
-    if (!user) {
-      return res.status(401).json({
+    if (!session) {
+      return sendJson(res, 401, {
         success: false,
-        error: 'Unauthorized',
-        message: 'Please login to access your profile'
+        error: "Unauthorized",
+        message: "Sign in to view your profile.",
       });
     }
 
-    // Return user profile
-    res.status(200).json({
+    const tokenStatus = await UserAuthManager.getTokenStatus(session.userId).catch(() => null);
+
+    return sendJson(res, 200, {
       success: true,
       user: {
-        id: user.userId,
-        name: user.name,
-        email: user.email,
-        metaUserId: user.metaUserId,
-        createdAt: user.createdAt,
-        lastUsed: user.lastUsed,
+        id: session.userId,
+        name: session.name,
+        email: session.email ?? null,
+        metaUserId: session.metaUserId,
+        createdAt: session.createdAt,
+        lastUsed: session.lastUsed,
       },
       mcpEndpoint: `https://${req.headers.host}/api/mcp`,
-      tokenStatus: {
-        hasToken: !!user.accessToken,
-        expiration: user.tokenExpiration,
-        isExpired: user.tokenExpiration ? new Date() > user.tokenExpiration : false,
-      }
+      tokenStatus: tokenStatus ?? { hasToken: false, isValid: false, scopes: [] },
     });
   } catch (error) {
-    console.error('Profile error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to get profile',
-      message: error instanceof Error ? error.message : 'Unknown error'
+    console.error("Profile error:", {
+      reason: error instanceof Error ? error.message : "unknown",
     });
+    return sendJson(res, 500, { success: false, error: "Could not load your profile." });
   }
 }

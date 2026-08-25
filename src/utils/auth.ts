@@ -1,4 +1,5 @@
 import type { MetaApiConfig } from "../types/meta-api.js";
+import { appSecretProof } from "./crypto.js";
 
 export class AuthManager {
   private config: MetaApiConfig;
@@ -32,6 +33,21 @@ export class AuthManager {
     return this.config.baseUrl || "https://graph.facebook.com";
   }
 
+  /**
+   * Query parameters carrying the access token, plus `appsecret_proof` when an
+   * app secret is configured. Meta recommends the proof on every server-side
+   * call and can be configured to require it.
+   */
+  protected tokenQuery(): URLSearchParams {
+    const params = new URLSearchParams({ access_token: this.getAccessToken() });
+
+    if (this.config.appSecret) {
+      params.set("appsecret_proof", appSecretProof(this.getAccessToken(), this.config.appSecret));
+    }
+
+    return params;
+  }
+
   getAuthHeaders(): Record<string, string> {
     return {
       Authorization: `Bearer ${this.getAccessToken()}`,
@@ -43,7 +59,7 @@ export class AuthManager {
   async validateToken(): Promise<boolean> {
     try {
       const response = await fetch(
-        `${this.getBaseUrl()}/${this.getApiVersion()}/me?access_token=${this.getAccessToken()}`
+        `${this.getBaseUrl()}/${this.getApiVersion()}/me?${this.tokenQuery().toString()}`
       );
       return response.ok;
     } catch (error) {
@@ -121,7 +137,7 @@ export class AuthManager {
       ...(state && { state }),
     });
 
-    return `https://www.facebook.com/v${this.getApiVersion()}/dialog/oauth?${params.toString()}`;
+    return `https://www.facebook.com/${this.getApiVersion()}/dialog/oauth?${params.toString()}`;
   }
 
   /**
@@ -223,7 +239,9 @@ export class AuthManager {
    */
   isTokenExpiring(bufferMinutes: number = 5): boolean {
     if (!this.config.tokenExpiration) {
-      return false; // No expiration set, assume it's valid
+      // Unknown expiry: treat as expiring so callers refresh rather than
+      // assuming a token that may already be dead is still good.
+      return true;
     }
 
     const bufferTime = bufferMinutes * 60 * 1000; // Convert to milliseconds
@@ -237,6 +255,11 @@ export class AuthManager {
    */
   async autoRefreshToken(): Promise<string> {
     if (!this.config.autoRefresh) {
+      return this.config.accessToken;
+    }
+
+    // Without app credentials there is nothing to exchange the token for.
+    if (!this.config.appId || !this.config.appSecret) {
       return this.config.accessToken;
     }
 
@@ -321,8 +344,11 @@ export class AuthManager {
     isValid: boolean;
   }> {
     try {
+      const params = this.tokenQuery();
+      params.set("input_token", this.getAccessToken());
+
       const response = await fetch(
-        `${this.getBaseUrl()}/${this.getApiVersion()}/debug_token?input_token=${this.getAccessToken()}&access_token=${this.getAccessToken()}`
+        `${this.getBaseUrl()}/${this.getApiVersion()}/debug_token?${params.toString()}`
       );
 
       if (!response.ok) {

@@ -1,49 +1,39 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
-    "api/mcp.ts": {
-      "maxDuration": 60
-    },
-    "api/auth/login.ts": {
-      "maxDuration": 30
-    },
-    "api/auth/callback.ts": {
-      "maxDuration": 30
-    },
-    "api/auth/profile.ts": {
-      "maxDuration": 15
-    },
-    "api/auth/logout.ts": {
-      "maxDuration": 15
-    },
-    "api/auth/refresh.ts": {
-      "maxDuration": 30
-    },
-    "api/auth/revoke.ts": {
-      "maxDuration": 30
-    },
-    "api/index.ts": {
-      "maxDuration": 10
-    },
-    "api/dashboard.ts": {
-      "maxDuration": 15
-    },
-    "api/test-auth.ts": {
-      "maxDuration": 15
-    }
+    "api/mcp.ts": { "maxDuration": 60 },
+    "api/auth/pin.ts": { "maxDuration": 10 },
+    "api/auth/login.ts": { "maxDuration": 30 },
+    "api/auth/callback.ts": { "maxDuration": 30 },
+    "api/auth/profile.ts": { "maxDuration": 15 },
+    "api/auth/logout.ts": { "maxDuration": 15 },
+    "api/auth/refresh.ts": { "maxDuration": 30 },
+    "api/auth/revoke.ts": { "maxDuration": 30 },
+    "api/auth/rotate.ts": { "maxDuration": 15 },
+    "api/index.ts": { "maxDuration": 10 },
+    "api/dashboard.ts": { "maxDuration": 15 }
   },
   "rewrites": [
+    { "source": "/", "destination": "/api/index" },
+    { "source": "/mcp", "destination": "/api/mcp" },
+    { "source": "/dashboard", "destination": "/api/dashboard" }
+  ],
+  "headers": [
     {
-      "source": "/",
-      "destination": "/api/index"
-    },
-    {
-      "source": "/mcp",
-      "destination": "/api/mcp"
-    },
-    {
-      "source": "/dashboard",
-      "destination": "/api/dashboard"
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "X-Frame-Options", "value": "DENY" },
+        { "key": "Referrer-Policy", "value": "no-referrer" },
+        {
+          "key": "Strict-Transport-Security",
+          "value": "max-age=63072000; includeSubDomains; preload"
+        },
+        {
+          "key": "Permissions-Policy",
+          "value": "camera=(), microphone=(), geolocation=(), payment=()"
+        }
+      ]
     }
   ]
 }

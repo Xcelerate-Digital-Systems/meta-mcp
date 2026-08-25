@@ -1,10 +1,49 @@
 # Web Plugin & Dashboard Audit
 
-**Scope:** the browser-facing web app (`api/index.ts`, `api/dashboard.ts`, `public/index.html`),
+**Scope:** the browser-facing web app (`api/index.ts`, `api/dashboard.ts`),
 the OAuth/session layer (`api/auth/*`, `src/utils/user-auth.ts`, `src/utils/auth.ts`), and the
 remote MCP endpoint that acts as the connector/"plugin" (`api/mcp.ts`, `vercel.json`).
 
 **Date:** 2026-08-25 · **Branch:** `claude/web-plugin-dashboard-audit-q2eh6k` · **Version audited:** 1.7.0
+
+---
+
+## Remediation status
+
+Fixed on `claude/web-plugin-dashboard-audit-q2eh6k` (2026-08-25). The web app is now
+**locked behind a shared access PIN** — the email-based gating idea was dropped.
+
+| Finding | Status | What changed |
+|---|---|---|
+| S-01 hardcoded JWT fallback | **Fixed** | `src/utils/secrets.ts` fails closed on a missing, short or placeholder secret |
+| S-02 committed session token | **Fixed** | Purged from `examples/`; CI now fails on any JWT-shaped literal |
+| S-03 token in URL / localStorage | **Fixed** | `HttpOnly` cookie only; the `?token=` redirect and `localStorage` write are gone |
+| S-04 credential logging | **Fixed** | No cookie or token values logged; the callback error body no longer echoes cookies |
+| S-05 no security headers | **Fixed** | CSP, `frame-ancestors 'none'`, HSTS, `Referrer-Policy`, `no-store` on HTML |
+| S-06 plaintext tokens | **Fixed** | AES-256-GCM at rest (`src/utils/crypto.ts`), legacy records read and re-encrypted |
+| S-07 unescaped HTML | **Fixed** | All interpolated user data escaped; verified against a hostile display name |
+| S-08 cookie `Secure` detection | **Fixed** | Derived per request from `x-forwarded-proto`, not a hostname list |
+| S-09 missing `appsecret_proof` | **Fixed** | Sent on profile, token-debug, validation and revoke calls |
+| S-10 no rate limiting | **Fixed** | Redis/KV-backed limiter on PIN (5 / 15 min) and login (20 / 15 min) |
+| S-11 debug endpoints | **Fixed** | `api/test-auth.ts` deleted; `api/debug.ts` gated on `VERCEL_ENV` and value-free |
+| S-12 broad scope, no consent copy | **Partly** | `email` and `public_profile` added; `business_management` kept — tools still use it |
+| B-01 `undefined` email | **Fixed** | `email` scope requested; the field is optional end-to-end |
+| B-02 no-op refresh | **Fixed** | Expiry is persisted and `/api/auth/refresh` performs a real exchange |
+| B-03 short-lived token | **Fixed** | Upgraded to a long-lived token at callback, refreshed inside its buffer |
+| B-04 logout revokes Meta | **Fixed** | Logout ends the session only; `/api/auth/revoke` disconnects Meta |
+| B-05 `vv23.0` URL | **Fixed** | `src/utils/auth.ts` |
+| B-06 copy buttons | **Fixed** | Per-button feedback, clipboard fallback, no reliance on global `event` |
+| B-07 routing | **Fixed** | `public/index.html` removed; `/` and `/dashboard` are canonical |
+| P-01 no OAuth discovery | **Partly** | Real `401` + `WWW-Authenticate` and CORS/`OPTIONS`/`DELETE` added. `.well-known` metadata and the PKCE flow remain open. |
+| P-02 static 7-day bearer | **Partly** | Rotation now works and revokes the previous token (`tokenVersion`); expiry is shown. Client-side refresh still needs P-01. |
+| P-03 no CORS | **Fixed** | `OPTIONS` preflight and CORS headers on every MCP response |
+| P-04 repeated auth | **Fixed** | Authenticated once in the request wrapper; `lastUsed` writes throttled to hourly |
+| P-05 remote/stdio divergence | **Open** | Tool definitions are still duplicated. |
+| Dashboard product gaps | **Partly** | Live Meta token status, expiry, granted scopes, refresh/rotate/sign-out/disconnect. Ad-account list and activity history remain open. |
+| Hygiene (lint, tests, CI, types) | **Fixed** | Flat ESLint config, 31 passing tests, `api/` type-checked, CI with a secret scan |
+
+Also fixed while in there: `list_audiences` called `MetaApiClient.getCustomAudiences`, which
+did not exist — the tool threw a `TypeError` on every call. The method has been added.
 
 ---
 

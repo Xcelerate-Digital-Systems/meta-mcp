@@ -3,27 +3,61 @@ import { z } from "zod";
 import { MetaApiClient } from "../src/meta-client.js";
 import { UserAuthManager } from "../src/utils/user-auth.js";
 
+const CORS_HEADERS: Record<string, string> = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+  "Access-Control-Allow-Headers": "Authorization, Content-Type, Mcp-Session-Id, MCP-Protocol-Version",
+  "Access-Control-Expose-Headers": "Mcp-Session-Id",
+  "Access-Control-Max-Age": "86400",
+};
+
+/** Preflight for browser-based MCP clients. */
+const options = async () => new Response(null, { status: 204, headers: CORS_HEADERS });
+
+/**
+ * Unauthenticated requests get a real 401 with a WWW-Authenticate challenge,
+ * rather than a 200 carrying an error-shaped tool result.
+ */
+function unauthorized(detail: string): Response {
+  return new Response(
+    JSON.stringify({
+      error: "unauthorized",
+      error_description: detail,
+    }),
+    {
+      status: 401,
+      headers: {
+        ...CORS_HEADERS,
+        "Content-Type": "application/json",
+        "WWW-Authenticate": 'Bearer realm="meta-ads-mcp", error="invalid_token"',
+      },
+    }
+  );
+}
+
 // Create a wrapper to handle authentication at the request level
 const handler = async (req: Request) => {
-  console.log("🌐 Incoming request to MCP handler");
-
-  // Extract auth header from the actual request
   const authHeader = req.headers.get("authorization");
-  console.log("🔑 Auth header present:", !!authHeader);
 
-  return createMcpHandler(
+  if (!authHeader) {
+    return unauthorized("A bearer token is required. Sign in on the web dashboard to get one.");
+  }
+
+  if (!(await UserAuthManager.authenticateUser(authHeader))) {
+    return unauthorized("This token is invalid or has expired. Sign in again to get a new one.");
+  }
+
+  const response = await createMcpHandler(
     (server) => {
-      console.log("🚀 MCP server starting");
 
       // Health check tool (with authentication)
       server.tool(
         "health_check",
         "Check server health and authentication status",
         {},
-        async (args, context) => {
+        async () => {
           try {
             console.log("🔍 Health check starting");
-            console.log("Auth header available:", !!authHeader);
             if (!authHeader) {
               return {
                 content: [
@@ -126,10 +160,9 @@ const handler = async (req: Request) => {
         "get_ad_accounts",
         "Get list of accessible Meta ad accounts",
         {},
-        async (args, context) => {
+        async () => {
           try {
             console.log("📋 Get ad accounts starting");
-            console.log("Using auth header from request scope:", !!authHeader);
             if (!authHeader) {
               throw new Error(
                 "Authentication required: Missing Authorization header"
@@ -141,7 +174,7 @@ const handler = async (req: Request) => {
               throw new Error("Invalid authentication token");
             }
 
-            const auth = await UserAuthManager.createUserAuthManager(
+            const auth = await UserAuthManager.getRefreshedAuthManager(
               user.userId
             );
             if (!auth) {
@@ -149,7 +182,6 @@ const handler = async (req: Request) => {
             }
 
             const metaClient = new MetaApiClient(auth);
-            await auth.refreshTokenIfNeeded();
             const accounts = await metaClient.getAdAccounts();
 
             return {
@@ -206,7 +238,7 @@ const handler = async (req: Request) => {
             .optional()
             .describe("Filter by campaign status (ACTIVE, PAUSED, etc.)"),
         },
-        async ({ account_id, limit, status }, context) => {
+        async ({ account_id, limit, status }) => {
           try {
             console.log("📋 Get campaigns starting for account:", account_id);
             if (!authHeader) {
@@ -220,7 +252,7 @@ const handler = async (req: Request) => {
               throw new Error("Invalid authentication token");
             }
 
-            const auth = await UserAuthManager.createUserAuthManager(
+            const auth = await UserAuthManager.getRefreshedAuthManager(
               user.userId
             );
             if (!auth) {
@@ -228,7 +260,6 @@ const handler = async (req: Request) => {
             }
 
             const metaClient = new MetaApiClient(auth);
-            await auth.refreshTokenIfNeeded();
 
             const result = await metaClient.getCampaigns(account_id, {
               limit: limit || 25,
@@ -299,7 +330,7 @@ const handler = async (req: Request) => {
             .describe("Specific metrics to retrieve"),
           limit: z.number().optional().describe("Number of results to return"),
         },
-        async ({ object_id, level, date_preset, fields, limit }, context) => {
+        async ({ object_id, level, date_preset, fields, limit }) => {
           try {
             console.log("📊 Getting insights for:", object_id);
 
@@ -312,7 +343,7 @@ const handler = async (req: Request) => {
               throw new Error("Invalid authentication token");
             }
 
-            const auth = await UserAuthManager.createUserAuthManager(
+            const auth = await UserAuthManager.getRefreshedAuthManager(
               user.userId
             );
             if (!auth) {
@@ -320,7 +351,6 @@ const handler = async (req: Request) => {
             }
 
             const metaClient = new MetaApiClient(auth);
-            await auth.refreshTokenIfNeeded();
 
             const params: Record<string, any> = {
               level,
@@ -419,14 +449,13 @@ const handler = async (req: Request) => {
             if (!authHeader) throw new Error("Authentication required");
             const user = await UserAuthManager.authenticateUser(authHeader);
             if (!user) throw new Error("Invalid authentication token");
-            const auth = await UserAuthManager.createUserAuthManager(
+            const auth = await UserAuthManager.getRefreshedAuthManager(
               user.userId
             );
             if (!auth)
               throw new Error("Failed to initialize user authentication");
 
             const metaClient = new MetaApiClient(auth);
-            await auth.refreshTokenIfNeeded();
 
             const campaignData: any = {
               name,
@@ -459,7 +488,7 @@ const handler = async (req: Request) => {
                 {
                   type: "text",
                   text: JSON.stringify(
-                    { success: false, error: error.message },
+                    { success: false, error: (error instanceof Error ? error.message : "Unknown error") },
                     null,
                     2
                   ),
@@ -498,14 +527,13 @@ const handler = async (req: Request) => {
             if (!authHeader) throw new Error("Authentication required");
             const user = await UserAuthManager.authenticateUser(authHeader);
             if (!user) throw new Error("Invalid authentication token");
-            const auth = await UserAuthManager.createUserAuthManager(
+            const auth = await UserAuthManager.getRefreshedAuthManager(
               user.userId
             );
             if (!auth)
               throw new Error("Failed to initialize user authentication");
 
             const metaClient = new MetaApiClient(auth);
-            await auth.refreshTokenIfNeeded();
 
             const updates: any = {};
             if (name) updates.name = name;
@@ -532,7 +560,7 @@ const handler = async (req: Request) => {
                 {
                   type: "text",
                   text: JSON.stringify(
-                    { success: false, error: error.message },
+                    { success: false, error: (error instanceof Error ? error.message : "Unknown error") },
                     null,
                     2
                   ),
@@ -555,14 +583,13 @@ const handler = async (req: Request) => {
             if (!authHeader) throw new Error("Authentication required");
             const user = await UserAuthManager.authenticateUser(authHeader);
             if (!user) throw new Error("Invalid authentication token");
-            const auth = await UserAuthManager.createUserAuthManager(
+            const auth = await UserAuthManager.getRefreshedAuthManager(
               user.userId
             );
             if (!auth)
               throw new Error("Failed to initialize user authentication");
 
             const metaClient = new MetaApiClient(auth);
-            await auth.refreshTokenIfNeeded();
 
             await metaClient.updateCampaign(campaign_id, { status: "PAUSED" });
 
@@ -584,7 +611,7 @@ const handler = async (req: Request) => {
                 {
                   type: "text",
                   text: JSON.stringify(
-                    { success: false, error: error.message },
+                    { success: false, error: (error instanceof Error ? error.message : "Unknown error") },
                     null,
                     2
                   ),
@@ -607,14 +634,13 @@ const handler = async (req: Request) => {
             if (!authHeader) throw new Error("Authentication required");
             const user = await UserAuthManager.authenticateUser(authHeader);
             if (!user) throw new Error("Invalid authentication token");
-            const auth = await UserAuthManager.createUserAuthManager(
+            const auth = await UserAuthManager.getRefreshedAuthManager(
               user.userId
             );
             if (!auth)
               throw new Error("Failed to initialize user authentication");
 
             const metaClient = new MetaApiClient(auth);
-            await auth.refreshTokenIfNeeded();
 
             await metaClient.updateCampaign(campaign_id, { status: "ACTIVE" });
 
@@ -636,7 +662,7 @@ const handler = async (req: Request) => {
                 {
                   type: "text",
                   text: JSON.stringify(
-                    { success: false, error: error.message },
+                    { success: false, error: (error instanceof Error ? error.message : "Unknown error") },
                     null,
                     2
                   ),
@@ -761,14 +787,13 @@ const handler = async (req: Request) => {
             if (!authHeader) throw new Error("Authentication required");
             const user = await UserAuthManager.authenticateUser(authHeader);
             if (!user) throw new Error("Invalid authentication token");
-            const auth = await UserAuthManager.createUserAuthManager(
+            const auth = await UserAuthManager.getRefreshedAuthManager(
               user.userId
             );
             if (!auth)
               throw new Error("Failed to initialize user authentication");
 
             const metaClient = new MetaApiClient(auth);
-            await auth.refreshTokenIfNeeded();
 
             // Build targeting object carefully
             const targeting: any = {};
@@ -866,9 +891,9 @@ const handler = async (req: Request) => {
                   text: JSON.stringify(
                     {
                       success: false,
-                      error: error.message,
+                      error: (error instanceof Error ? error.message : "Unknown error"),
                       troubleshooting: {
-                        error_details: error.message,
+                        error_details: (error instanceof Error ? error.message : "Unknown error"),
                         common_fixes: [
                           "Ensure campaign is fully initialized (wait 1-2 minutes after creation)",
                           "Verify account has payment method configured",
@@ -877,15 +902,15 @@ const handler = async (req: Request) => {
                           "Ensure minimum budget requirements are met ($1+ daily)",
                         ],
                         specific_guidance:
-                          error.message.includes("payment") ||
-                          error.message.includes("billing") ||
-                          error.message.includes("funding")
+                          (error instanceof Error ? error.message : "Unknown error").includes("payment") ||
+                          (error instanceof Error ? error.message : "Unknown error").includes("billing") ||
+                          (error instanceof Error ? error.message : "Unknown error").includes("funding")
                             ? "This appears to be a payment method issue. Please add a valid payment method in Meta Ads Manager."
-                            : error.message.includes("permission") ||
-                              error.message.includes("access")
+                            : (error instanceof Error ? error.message : "Unknown error").includes("permission") ||
+                              (error instanceof Error ? error.message : "Unknown error").includes("access")
                             ? "This appears to be a permissions issue. You may need admin access to the ad account."
-                            : error.message.includes("budget") ||
-                              error.message.includes("minimum")
+                            : (error instanceof Error ? error.message : "Unknown error").includes("budget") ||
+                              (error instanceof Error ? error.message : "Unknown error").includes("minimum")
                             ? "This appears to be a budget issue. Try increasing the daily budget to at least $5 (500 cents)."
                             : "Check the error message above for specific guidance.",
                       },
@@ -914,14 +939,13 @@ const handler = async (req: Request) => {
             if (!authHeader) throw new Error("Authentication required");
             const user = await UserAuthManager.authenticateUser(authHeader);
             if (!user) throw new Error("Invalid authentication token");
-            const auth = await UserAuthManager.createUserAuthManager(
+            const auth = await UserAuthManager.getRefreshedAuthManager(
               user.userId
             );
             if (!auth)
               throw new Error("Failed to initialize user authentication");
 
             const metaClient = new MetaApiClient(auth);
-            await auth.refreshTokenIfNeeded();
 
             const params: any = { limit: limit || 25 };
             if (status) params.status = status;
@@ -949,7 +973,7 @@ const handler = async (req: Request) => {
                 {
                   type: "text",
                   text: JSON.stringify(
-                    { success: false, error: error.message },
+                    { success: false, error: (error instanceof Error ? error.message : "Unknown error") },
                     null,
                     2
                   ),
@@ -976,14 +1000,13 @@ const handler = async (req: Request) => {
             if (!authHeader) throw new Error("Authentication required");
             const user = await UserAuthManager.authenticateUser(authHeader);
             if (!user) throw new Error("Invalid authentication token");
-            const auth = await UserAuthManager.createUserAuthManager(
+            const auth = await UserAuthManager.getRefreshedAuthManager(
               user.userId
             );
             if (!auth)
               throw new Error("Failed to initialize user authentication");
 
             const metaClient = new MetaApiClient(auth);
-            await auth.refreshTokenIfNeeded();
 
             const adData = {
               name,
@@ -1008,7 +1031,7 @@ const handler = async (req: Request) => {
                 {
                   type: "text",
                   text: JSON.stringify(
-                    { success: false, error: error.message },
+                    { success: false, error: (error instanceof Error ? error.message : "Unknown error") },
                     null,
                     2
                   ),
@@ -1035,14 +1058,13 @@ const handler = async (req: Request) => {
             if (!authHeader) throw new Error("Authentication required");
             const user = await UserAuthManager.authenticateUser(authHeader);
             if (!user) throw new Error("Invalid authentication token");
-            const auth = await UserAuthManager.createUserAuthManager(
+            const auth = await UserAuthManager.getRefreshedAuthManager(
               user.userId
             );
             if (!auth)
               throw new Error("Failed to initialize user authentication");
 
             const metaClient = new MetaApiClient(auth);
-            await auth.refreshTokenIfNeeded();
 
             const params: any = { limit: limit || 25 };
             if (status) params.status = status;
@@ -1077,7 +1099,7 @@ const handler = async (req: Request) => {
                 {
                   type: "text",
                   text: JSON.stringify(
-                    { success: false, error: error.message },
+                    { success: false, error: (error instanceof Error ? error.message : "Unknown error") },
                     null,
                     2
                   ),
@@ -1114,14 +1136,13 @@ const handler = async (req: Request) => {
             if (!authHeader) throw new Error("Authentication required");
             const user = await UserAuthManager.authenticateUser(authHeader);
             if (!user) throw new Error("Invalid authentication token");
-            const auth = await UserAuthManager.createUserAuthManager(
+            const auth = await UserAuthManager.getRefreshedAuthManager(
               user.userId
             );
             if (!auth)
               throw new Error("Failed to initialize user authentication");
 
             const metaClient = new MetaApiClient(auth);
-            await auth.refreshTokenIfNeeded();
 
             const results: any[] = [];
             for (const object_id of object_ids) {
@@ -1155,7 +1176,7 @@ const handler = async (req: Request) => {
                 {
                   type: "text",
                   text: JSON.stringify(
-                    { success: false, error: error.message },
+                    { success: false, error: (error instanceof Error ? error.message : "Unknown error") },
                     null,
                     2
                   ),
@@ -1187,14 +1208,13 @@ const handler = async (req: Request) => {
             if (!authHeader) throw new Error("Authentication required");
             const user = await UserAuthManager.authenticateUser(authHeader);
             if (!user) throw new Error("Invalid authentication token");
-            const auth = await UserAuthManager.createUserAuthManager(
+            const auth = await UserAuthManager.getRefreshedAuthManager(
               user.userId
             );
             if (!auth)
               throw new Error("Failed to initialize user authentication");
 
             const metaClient = new MetaApiClient(auth);
-            await auth.refreshTokenIfNeeded();
 
             const params: Record<string, any> = {
               level,
@@ -1245,7 +1265,7 @@ const handler = async (req: Request) => {
                 {
                   type: "text",
                   text: JSON.stringify(
-                    { success: false, error: error.message },
+                    { success: false, error: (error instanceof Error ? error.message : "Unknown error") },
                     null,
                     2
                   ),
@@ -1273,14 +1293,13 @@ const handler = async (req: Request) => {
             if (!authHeader) throw new Error("Authentication required");
             const user = await UserAuthManager.authenticateUser(authHeader);
             if (!user) throw new Error("Invalid authentication token");
-            const auth = await UserAuthManager.createUserAuthManager(
+            const auth = await UserAuthManager.getRefreshedAuthManager(
               user.userId
             );
             if (!auth)
               throw new Error("Failed to initialize user authentication");
 
             const metaClient = new MetaApiClient(auth);
-            await auth.refreshTokenIfNeeded();
 
             const audiences = await metaClient.getCustomAudiences(account_id, {
               limit: limit || 25,
@@ -1300,7 +1319,7 @@ const handler = async (req: Request) => {
                 {
                   type: "text",
                   text: JSON.stringify(
-                    { success: false, error: error.message },
+                    { success: false, error: (error instanceof Error ? error.message : "Unknown error") },
                     null,
                     2
                   ),
@@ -1343,14 +1362,13 @@ const handler = async (req: Request) => {
             if (!authHeader) throw new Error("Authentication required");
             const user = await UserAuthManager.authenticateUser(authHeader);
             if (!user) throw new Error("Invalid authentication token");
-            const auth = await UserAuthManager.createUserAuthManager(
+            const auth = await UserAuthManager.getRefreshedAuthManager(
               user.userId
             );
             if (!auth)
               throw new Error("Failed to initialize user authentication");
 
             const metaClient = new MetaApiClient(auth);
-            await auth.refreshTokenIfNeeded();
 
             const audience = await metaClient.createCustomAudience(account_id, {
               name,
@@ -1372,7 +1390,7 @@ const handler = async (req: Request) => {
                 {
                   type: "text",
                   text: JSON.stringify(
-                    { success: false, error: error.message },
+                    { success: false, error: (error instanceof Error ? error.message : "Unknown error") },
                     null,
                     2
                   ),
@@ -1409,14 +1427,13 @@ const handler = async (req: Request) => {
             if (!authHeader) throw new Error("Authentication required");
             const user = await UserAuthManager.authenticateUser(authHeader);
             if (!user) throw new Error("Invalid authentication token");
-            const auth = await UserAuthManager.createUserAuthManager(
+            const auth = await UserAuthManager.getRefreshedAuthManager(
               user.userId
             );
             if (!auth)
               throw new Error("Failed to initialize user authentication");
 
             const metaClient = new MetaApiClient(auth);
-            await auth.refreshTokenIfNeeded();
 
             const audience = await metaClient.createLookalikeAudience(
               account_id,
@@ -1443,7 +1460,7 @@ const handler = async (req: Request) => {
                 {
                   type: "text",
                   text: JSON.stringify(
-                    { success: false, error: error.message },
+                    { success: false, error: (error instanceof Error ? error.message : "Unknown error") },
                     null,
                     2
                   ),
@@ -1466,14 +1483,13 @@ const handler = async (req: Request) => {
             if (!authHeader) throw new Error("Authentication required");
             const user = await UserAuthManager.authenticateUser(authHeader);
             if (!user) throw new Error("Invalid authentication token");
-            const auth = await UserAuthManager.createUserAuthManager(
+            const auth = await UserAuthManager.getRefreshedAuthManager(
               user.userId
             );
             if (!auth)
               throw new Error("Failed to initialize user authentication");
 
             const metaClient = new MetaApiClient(auth);
-            await auth.refreshTokenIfNeeded();
 
             const audience = await metaClient.getCustomAudience(audience_id);
 
@@ -1491,7 +1507,7 @@ const handler = async (req: Request) => {
                 {
                   type: "text",
                   text: JSON.stringify(
-                    { success: false, error: error.message },
+                    { success: false, error: (error instanceof Error ? error.message : "Unknown error") },
                     null,
                     2
                   ),
@@ -1519,14 +1535,13 @@ const handler = async (req: Request) => {
             if (!authHeader) throw new Error("Authentication required");
             const user = await UserAuthManager.authenticateUser(authHeader);
             if (!user) throw new Error("Invalid authentication token");
-            const auth = await UserAuthManager.createUserAuthManager(
+            const auth = await UserAuthManager.getRefreshedAuthManager(
               user.userId
             );
             if (!auth)
               throw new Error("Failed to initialize user authentication");
 
             const metaClient = new MetaApiClient(auth);
-            await auth.refreshTokenIfNeeded();
 
             const creatives = await metaClient.getAdCreatives(account_id, {
               limit: limit || 25,
@@ -1546,7 +1561,7 @@ const handler = async (req: Request) => {
                 {
                   type: "text",
                   text: JSON.stringify(
-                    { success: false, error: error.message },
+                    { success: false, error: (error instanceof Error ? error.message : "Unknown error") },
                     null,
                     2
                   ),
@@ -1623,7 +1638,7 @@ const handler = async (req: Request) => {
             if (!authHeader) throw new Error("Authentication required");
             const user = await UserAuthManager.authenticateUser(authHeader);
             if (!user) throw new Error("Invalid authentication token");
-            const auth = await UserAuthManager.createUserAuthManager(
+            const auth = await UserAuthManager.getRefreshedAuthManager(
               user.userId
             );
             if (!auth)
@@ -1669,7 +1684,6 @@ const handler = async (req: Request) => {
             }
 
             const metaClient = new MetaApiClient(auth);
-            await auth.refreshTokenIfNeeded();
 
             // Build object_story_spec with v23.0 image handling
             const link_data: any = {
@@ -1767,7 +1781,7 @@ const handler = async (req: Request) => {
                   text: JSON.stringify(
                     {
                       success: false,
-                      error: error.message,
+                      error: (error instanceof Error ? error.message : "Unknown error"),
                       troubleshooting: {
                         image_url_tips: [
                           "Ensure the image URL is publicly accessible",
@@ -1805,14 +1819,13 @@ const handler = async (req: Request) => {
             if (!authHeader) throw new Error("Authentication required");
             const user = await UserAuthManager.authenticateUser(authHeader);
             if (!user) throw new Error("Invalid authentication token");
-            const auth = await UserAuthManager.createUserAuthManager(
+            const auth = await UserAuthManager.getRefreshedAuthManager(
               user.userId
             );
             if (!auth)
               throw new Error("Failed to initialize user authentication");
 
             const metaClient = new MetaApiClient(auth);
-            await auth.refreshTokenIfNeeded();
 
             // Get detailed account information
             const account = await metaClient.getAdAccount(account_id);
@@ -1892,7 +1905,7 @@ const handler = async (req: Request) => {
             }
 
             // Budget recommendations based on currency
-            const budgetRecommendations = {
+            const budgetRecommendations: Record<string, string> = {
               USD: "Minimum $1 (100 cents), recommended $10+ (1000+ cents)",
               EUR: "Minimum €1 (100 cents), recommended €10+ (1000+ cents)",
               GBP: "Minimum £1 (100 pence), recommended £10+ (1000+ pence)",
@@ -1940,7 +1953,7 @@ const handler = async (req: Request) => {
                   text: JSON.stringify(
                     {
                       success: false,
-                      error: error.message,
+                      error: (error instanceof Error ? error.message : "Unknown error"),
                       account_id,
                     },
                     null,
@@ -1966,14 +1979,13 @@ const handler = async (req: Request) => {
             if (!authHeader) throw new Error("Authentication required");
             const user = await UserAuthManager.authenticateUser(authHeader);
             if (!user) throw new Error("Invalid authentication token");
-            const auth = await UserAuthManager.createUserAuthManager(
+            const auth = await UserAuthManager.getRefreshedAuthManager(
               user.userId
             );
             if (!auth)
               throw new Error("Failed to initialize user authentication");
 
             const metaClient = new MetaApiClient(auth);
-            await auth.refreshTokenIfNeeded();
 
             // Get campaign details
             const campaign = await metaClient.getCampaign(campaign_id);
@@ -1988,7 +2000,7 @@ const handler = async (req: Request) => {
               campaign_objective: campaign.objective,
               account_status: account.account_status,
               account_currency: account.currency,
-              has_payment_method: account.funding_source_details?.length > 0,
+              has_payment_method: (account.funding_source_details?.length ?? 0) > 0,
               pixel_setup: "Unknown - check manually in Ads Manager",
               recommendations: [] as string[],
             };
@@ -2068,7 +2080,7 @@ const handler = async (req: Request) => {
                   text: JSON.stringify(
                     {
                       success: false,
-                      error: error.message,
+                      error: (error instanceof Error ? error.message : "Unknown error"),
                       campaign_id,
                     },
                     null,
@@ -2104,7 +2116,7 @@ const handler = async (req: Request) => {
             if (!authHeader) throw new Error("Authentication required");
             const user = await UserAuthManager.authenticateUser(authHeader);
             if (!user) throw new Error("Invalid authentication token");
-            const auth = await UserAuthManager.createUserAuthManager(
+            const auth = await UserAuthManager.getRefreshedAuthManager(
               user.userId
             );
             if (!auth)
@@ -2124,7 +2136,6 @@ const handler = async (req: Request) => {
             }
 
             const metaClient = new MetaApiClient(auth);
-            await auth.refreshTokenIfNeeded();
 
             // Use the MetaApiClient to upload the image
             const uploadResult = await metaClient.uploadImageFromUrl(
@@ -2179,7 +2190,7 @@ const handler = async (req: Request) => {
               content: [
                 {
                   type: "text",
-                  text: `Error uploading image from URL: ${error.message}`,
+                  text: `Error uploading image from URL: ${(error instanceof Error ? error.message : "Unknown error")}`,
                 },
               ],
               isError: true,
@@ -2311,7 +2322,7 @@ const handler = async (req: Request) => {
               content: [
                 {
                   type: "text",
-                  text: `Error checking v23.0 compliance: ${error.message}`,
+                  text: `Error checking v23.0 compliance: ${(error instanceof Error ? error.message : "Unknown error")}`,
                 },
               ],
               isError: true,
@@ -2330,7 +2341,7 @@ const handler = async (req: Request) => {
             if (!authHeader) throw new Error("Authentication required");
             const user = await UserAuthManager.authenticateUser(authHeader);
             if (!user) throw new Error("Invalid authentication token");
-            const auth = await UserAuthManager.createUserAuthManager(
+            const auth = await UserAuthManager.getRefreshedAuthManager(
               user.userId
             );
             if (!auth)
@@ -2356,7 +2367,7 @@ const handler = async (req: Request) => {
                 {
                   type: "text",
                   text: JSON.stringify(
-                    { success: false, error: error.message },
+                    { success: false, error: (error instanceof Error ? error.message : "Unknown error") },
                     null,
                     2
                   ),
@@ -2377,9 +2388,15 @@ const handler = async (req: Request) => {
       // Vercel adapter configuration
       basePath: "/api",
       maxDuration: 60,
-      verboseLogs: true,
+      verboseLogs: process.env.VERCEL_ENV !== "production",
     }
   )(req);
+
+  for (const [name, value] of Object.entries(CORS_HEADERS)) {
+    response.headers.set(name, value);
+  }
+
+  return response;
 };
 
-export { handler as GET, handler as POST };
+export { handler as GET, handler as POST, handler as DELETE, options as OPTIONS };

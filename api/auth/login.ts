@@ -1,46 +1,60 @@
-import { NextApiRequest, NextApiResponse } from 'next';
-import { UserAuthManager } from '../../src/utils/user-auth.js';
+import type { VercelRequest, VercelResponse } from "@vercel/node";
+import { UserAuthManager } from "../../src/utils/user-auth.js";
+import { ACCESS_GATE_COOKIE, hasGateAccess } from "../../src/utils/access-pin.js";
+import {
+  appendCookies,
+  buildCookie,
+  clientIp,
+  getCookie,
+  isSecureRequest,
+  sendJson,
+} from "../../src/utils/http.js";
+import { checkRequestLimit } from "../../src/utils/request-limit.js";
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'Method not allowed' });
+const OAUTH_STATE_COOKIE = "oauth_state";
+const STATE_MAX_AGE = 600;
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET");
+    return sendJson(res, 405, { success: false, error: "Method not allowed" });
+  }
+
+  if (!(await hasGateAccess(getCookie(req, ACCESS_GATE_COOKIE)))) {
+    return sendJson(res, 403, {
+      success: false,
+      error: "Access PIN required",
+      message: "Enter the access PIN before connecting a Meta account.",
+    });
+  }
+
+  const limit = await checkRequestLimit("login", clientIp(req), 20, 15 * 60);
+  if (!limit.allowed) {
+    res.setHeader("Retry-After", String(limit.retryAfterSeconds));
+    return sendJson(res, 429, { success: false, error: "Too many login attempts." });
   }
 
   try {
-    // Generate OAuth state for CSRF protection
     const state = await UserAuthManager.generateOAuthState();
-    
-    console.log('Generated OAuth state:', state);
-    
-    // Store state in a secure cookie for validation later
-    const isProduction = req.headers.host?.includes('vercel.app') || req.headers.host?.includes('netlify.app');
-    
-    // Different cookie settings for different environments
-    const cookieOptions = isProduction 
-      ? `HttpOnly; Secure; SameSite=Lax; Max-Age=600; Path=/`
-      : `HttpOnly; SameSite=Lax; Max-Age=600; Path=/`;
-    
-    console.log('Setting cookie with options:', cookieOptions);
-    
-    res.setHeader('Set-Cookie', [
-      `oauth_state=${state}; ${cookieOptions}`, // 10 minutes
+
+    appendCookies(res, [
+      buildCookie(OAUTH_STATE_COOKIE, state, {
+        maxAge: STATE_MAX_AGE,
+        secure: isSecureRequest(req),
+      }),
     ]);
 
-    // Generate Meta OAuth URL
-    const authUrl = UserAuthManager.generateMetaOAuthUrl(state);
-
-    // Return the authorization URL
-    res.status(200).json({
+    return sendJson(res, 200, {
       success: true,
-      authUrl: authUrl,
-      message: 'Redirect user to this URL to begin OAuth flow'
+      authUrl: UserAuthManager.generateMetaOAuthUrl(state),
     });
   } catch (error) {
-    console.error('OAuth login error:', error);
-    res.status(500).json({
+    console.error("OAuth login error:", {
+      reason: error instanceof Error ? error.message : "unknown",
+    });
+    return sendJson(res, 500, {
       success: false,
-      error: 'Failed to generate authorization URL',
-      message: error instanceof Error ? error.message : 'Unknown error'
+      error: "Could not start the Meta login flow. Check the server configuration.",
     });
   }
 }

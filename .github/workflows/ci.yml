@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Typecheck (src and api)
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm run test:unit
+        env:
+          JWT_SECRET: ci-only-secret-value-long-enough-for-hs256-abcdefgh
+
+      - name: Check for committed secrets
+        run: |
+          if grep -rIn --exclude-dir=node_modules --exclude-dir=.git \
+               --exclude-dir=build --exclude=package-lock.json --exclude=pnpm-lock.yaml \
+               -E 'eyJhbGciOi[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}' .; then
+            echo "::error::A JWT-shaped string is committed to the repository."
+            exit 1
+          fi

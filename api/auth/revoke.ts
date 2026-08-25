@@ -1,62 +1,69 @@
-import { NextApiRequest, NextApiResponse } from 'next';
-import { UserAuthManager } from '../../src/utils/user-auth.js';
+import type { VercelRequest, VercelResponse } from "@vercel/node";
+import { UserAuthManager, SESSION_COOKIE } from "../../src/utils/user-auth.js";
+import { authenticateRequest, isCsrfSafe } from "../../src/utils/session-request.js";
+import { appSecretProof } from "../../src/utils/crypto.js";
+import { appendCookies, clearCookie, isSecureRequest, sendJson } from "../../src/utils/http.js";
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
+const GRAPH_VERSION = process.env.META_API_VERSION || "v23.0";
+const GRAPH_BASE = process.env.META_BASE_URL || "https://graph.facebook.com";
+
+/** Disconnect Meta entirely: revoke the permissions, then delete everything stored. */
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
+    return sendJson(res, 405, { success: false, error: "Method not allowed" });
   }
 
   try {
-    // Authenticate user
-    const authHeader = req.headers.authorization;
-    const user = await UserAuthManager.authenticateUser(authHeader);
+    const { session, via } = await authenticateRequest(req);
 
-    if (!user) {
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized',
-        message: 'No active session found'
-      });
+    if (!session) {
+      return sendJson(res, 401, { success: false, error: "No active session found." });
     }
 
-    // Get user's tokens before deletion
-    const tokens = await UserAuthManager.getUserTokens(user.userId);
+    if (!isCsrfSafe(req, via)) {
+      return sendJson(res, 403, { success: false, error: "Request origin not allowed." });
+    }
+
+    const tokens = await UserAuthManager.getUserTokens(session.userId);
 
     if (tokens?.accessToken) {
       try {
-        // Attempt to revoke the token with Meta
-        const revokeUrl = `https://graph.facebook.com/v23.0/me/permissions?access_token=${tokens.accessToken}`;
-        const revokeResponse = await fetch(revokeUrl, {
-          method: 'DELETE'
-        });
+        const params = new URLSearchParams({ access_token: tokens.accessToken });
 
-        if (!revokeResponse.ok) {
-          console.warn('Meta token revocation failed, but continuing with local cleanup');
+        if (process.env.META_APP_SECRET) {
+          params.set(
+            "appsecret_proof",
+            appSecretProof(tokens.accessToken, process.env.META_APP_SECRET)
+          );
+        }
+
+        const response = await fetch(
+          `${GRAPH_BASE}/${GRAPH_VERSION}/me/permissions?${params.toString()}`,
+          { method: "DELETE" }
+        );
+
+        if (!response.ok) {
+          console.warn("Meta permission revocation returned an error; continuing with local cleanup.");
         }
       } catch (error) {
-        console.warn('Meta token revocation error:', error);
-        // Continue with local cleanup even if Meta revocation fails
+        console.warn("Meta permission revocation failed; continuing with local cleanup:", {
+          reason: error instanceof Error ? error.message : "unknown",
+        });
       }
     }
 
-    // Delete user session and tokens from our storage
-    await UserAuthManager.deleteUserData(user.userId);
+    await UserAuthManager.deleteUserData(session.userId);
+    appendCookies(res, [clearCookie(SESSION_COOKIE, isSecureRequest(req))]);
 
-    // Clear session cookie
-    res.setHeader('Set-Cookie', [
-      `session_token=; HttpOnly; Secure; SameSite=Strict; Max-Age=0; Path=/`,
-    ]);
-
-    res.status(200).json({
+    return sendJson(res, 200, {
       success: true,
-      message: 'Tokens revoked and session deleted successfully. You have been logged out from both the MCP server and Meta.'
+      message: "Meta access revoked and stored tokens deleted. Existing MCP clients will stop working.",
     });
   } catch (error) {
-    console.error('Token revocation error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to revoke tokens',
-      message: error instanceof Error ? error.message : 'Unknown error'
+    console.error("Token revocation error:", {
+      reason: error instanceof Error ? error.message : "unknown",
     });
+    return sendJson(res, 500, { success: false, error: "Could not revoke access." });
   }
 }

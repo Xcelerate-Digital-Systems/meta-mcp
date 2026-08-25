@@ -1,42 +1,41 @@
-import { NextApiRequest, NextApiResponse } from 'next';
-import { UserAuthManager } from '../../src/utils/user-auth.js';
+import type { VercelRequest, VercelResponse } from "@vercel/node";
+import { UserAuthManager, SESSION_COOKIE } from "../../src/utils/user-auth.js";
+import { authenticateRequest, isCsrfSafe } from "../../src/utils/session-request.js";
+import { appendCookies, clearCookie, isSecureRequest, sendJson } from "../../src/utils/http.js";
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
+/**
+ * End the browser session. The user's Meta tokens are deliberately left in
+ * place so their configured MCP clients keep working - use /api/auth/revoke to
+ * disconnect Meta entirely.
+ */
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
+    return sendJson(res, 405, { success: false, error: "Method not allowed" });
   }
 
   try {
-    // Authenticate user
-    const authHeader = req.headers.authorization;
-    const user = await UserAuthManager.authenticateUser(authHeader);
+    const { session, via } = await authenticateRequest(req);
 
-    if (!user) {
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized',
-        message: 'No active session found'
-      });
+    if (!session) {
+      return sendJson(res, 401, { success: false, error: "No active session found." });
     }
 
-    // Delete user session and tokens
-    await UserAuthManager.deleteUserData(user.userId);
+    if (!isCsrfSafe(req, via)) {
+      return sendJson(res, 403, { success: false, error: "Request origin not allowed." });
+    }
 
-    // Clear session cookie
-    res.setHeader('Set-Cookie', [
-      `session_token=; HttpOnly; Secure; SameSite=Strict; Max-Age=0; Path=/`, // Clear session cookie
-    ]);
+    await UserAuthManager.deleteUserSession(session.userId);
+    appendCookies(res, [clearCookie(SESSION_COOKIE, isSecureRequest(req))]);
 
-    res.status(200).json({
+    return sendJson(res, 200, {
       success: true,
-      message: 'Successfully logged out. Your tokens and session data have been deleted.'
+      message: "Signed out. Your Meta connection is unchanged.",
     });
   } catch (error) {
-    console.error('Logout error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to logout',
-      message: error instanceof Error ? error.message : 'Unknown error'
+    console.error("Logout error:", {
+      reason: error instanceof Error ? error.message : "unknown",
     });
+    return sendJson(res, 500, { success: false, error: "Could not sign you out." });
   }
 }

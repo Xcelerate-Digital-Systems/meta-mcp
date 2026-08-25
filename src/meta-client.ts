@@ -815,6 +815,29 @@ export class MetaApiClient {
     }
   }
 
+  async getCustomAudiences(
+    accountId: string,
+    options: { limit?: number; after?: string } = {}
+  ): Promise<PaginatedResult<CustomAudience>> {
+    const formattedAccountId = this.auth.getAccountId(accountId);
+    const queryParams = {
+      fields:
+        "id,name,description,approximate_count,delivery_status,operation_status,subtype,time_created",
+      limit: options.limit ?? 25,
+      ...(options.after && { after: options.after }),
+    };
+
+    const query = this.buildQueryString(queryParams);
+    const response = await this.makeRequest<MetaApiResponse<CustomAudience>>(
+      `${formattedAccountId}/customaudiences?${query}`,
+      "GET",
+      undefined,
+      formattedAccountId
+    );
+
+    return PaginationHelper.parsePaginatedResponse(response);
+  }
+
   async getCustomAudience(audienceId: string): Promise<CustomAudience> {
     const queryParams = {
       fields:

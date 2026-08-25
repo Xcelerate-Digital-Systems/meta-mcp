@@ -1,53 +1,46 @@
-import { NextApiRequest, NextApiResponse } from 'next';
-import { UserAuthManager } from '../../src/utils/user-auth.js';
+import type { VercelRequest, VercelResponse } from "@vercel/node";
+import { UserAuthManager } from "../../src/utils/user-auth.js";
+import { authenticateRequest, isCsrfSafe } from "../../src/utils/session-request.js";
+import { sendJson } from "../../src/utils/http.js";
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
+    return sendJson(res, 405, { success: false, error: "Method not allowed" });
   }
 
   try {
-    // Authenticate user
-    const authHeader = req.headers.authorization;
-    const user = await UserAuthManager.authenticateUser(authHeader);
+    const { session, via } = await authenticateRequest(req);
 
-    if (!user) {
-      return res.status(401).json({
+    if (!session) {
+      return sendJson(res, 401, { success: false, error: "Sign in to refresh your token." });
+    }
+
+    if (!isCsrfSafe(req, via)) {
+      return sendJson(res, 403, { success: false, error: "Request origin not allowed." });
+    }
+
+    const refreshed = await UserAuthManager.refreshUserToken(session.userId);
+
+    if (!refreshed) {
+      return sendJson(res, 400, {
         success: false,
-        error: 'Unauthorized',
-        message: 'Please login to refresh your tokens'
+        error: "Refresh failed",
+        message: "Meta would not extend this token. Reconnect your account to get a new one.",
       });
     }
 
-    // Attempt to refresh the user's tokens
-    const refreshSuccess = await UserAuthManager.refreshUserToken(user.userId);
+    const tokenStatus = await UserAuthManager.getTokenStatus(session.userId);
 
-    if (!refreshSuccess) {
-      return res.status(400).json({
-        success: false,
-        error: 'Token refresh failed',
-        message: 'Unable to refresh your Meta access token. You may need to re-authenticate.'
-      });
-    }
-
-    // Get updated token information
-    const updatedTokens = await UserAuthManager.getUserTokens(user.userId);
-
-    res.status(200).json({
+    return sendJson(res, 200, {
       success: true,
-      message: 'Tokens refreshed successfully',
-      tokenInfo: {
-        hasToken: !!updatedTokens?.accessToken,
-        tokenType: updatedTokens?.tokenType,
-        updatedAt: new Date().toISOString(),
-      }
+      message: "Meta token refreshed.",
+      tokenStatus,
     });
   } catch (error) {
-    console.error('Token refresh error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to refresh tokens',
-      message: error instanceof Error ? error.message : 'Unknown error'
+    console.error("Token refresh error:", {
+      reason: error instanceof Error ? error.message : "unknown",
     });
+    return sendJson(res, 500, { success: false, error: "Could not refresh the token." });
   }
 }

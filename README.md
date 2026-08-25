@@ -238,32 +238,45 @@ Enable debug logging by adding to your environment:
 
 ## 🌐 Web Deployment (Vercel)
 
-For web applications, this server is also available as a Vercel deployment with OAuth authentication:
+The hosted deployment adds a small web app in front of the MCP server: a
+PIN-protected landing page, Meta OAuth login, and a dashboard that issues the
+bearer token your MCP client uses.
 
-### Configuration:
-1. Deploy to Vercel or use our hosted version
-2. Set environment variables in Vercel dashboard
-3. Configure OAuth app in Meta Developer Console
-4. Use the web endpoint: `https://your-project.vercel.app/api/mcp`
+### Access PIN
 
-### MCP Client Configuration for Web:
-```json
-{
-  "mcpServers": {
-    "meta-ads-remote": {
-      "url": "https://mcp.offerarc.com/api/mcp",
-      "headers": {
-        "Authorization": "Bearer your_session_token"
-      }
-    }
-  }
-}
+The whole site sits behind a shared PIN. Set one of:
+
+```bash
+ACCESS_PIN=482913                  # the PIN itself
+ACCESS_PIN_HASH=<sha256 hex>       # or its digest, to keep the PIN out of env
 ```
 
-**Note**: You need to authenticate first at `https://mcp.offerarc.com/api/auth/login` to get your session token.
+Generate a hash with `printf '482913' | shasum -a 256`.
 
-### Remote MCP Configuration (mcp-remote)
-For Vercel deployments, use `mcp-remote` to bridge HTTP to stdio:
+The PIN is checked server-side, rate limited to 5 attempts per 15 minutes per
+IP, and exchanged for a 12-hour `HttpOnly` gate cookie. Every entry point —
+the landing page, `/api/auth/login`, the OAuth callback and the dashboard —
+requires that cookie.
+
+**If neither variable is set the site is open to anyone with the URL.** The
+server logs a warning but still runs, so local development needs no PIN.
+
+### Required environment variables
+
+| Variable | Purpose |
+|---|---|
+| `JWT_SECRET` | Signs sessions and gate tokens. At least 32 characters. **The server refuses to start without it.** |
+| `META_APP_ID`, `META_APP_SECRET`, `META_REDIRECT_URI` | Meta OAuth app credentials |
+| `REDIS_URL` *or* `KV_REST_API_URL` | Session, token and rate-limit storage |
+| `ACCESS_PIN` or `ACCESS_PIN_HASH` | Shared access PIN (strongly recommended) |
+| `TOKEN_ENCRYPTION_KEY` | Optional. 32 bytes for token encryption at rest; derived from `JWT_SECRET` when unset |
+
+### Connecting a client
+
+1. Open the deployment and enter the access PIN.
+2. Connect your Meta account (OAuth).
+3. Copy the generated configuration from the dashboard.
+
 ```json
 {
   "mcpServers": {
@@ -272,17 +285,48 @@ For Vercel deployments, use `mcp-remote` to bridge HTTP to stdio:
       "args": [
         "-y",
         "mcp-remote",
-        "https://mcp.offerarc.com/api/mcp",
+        "https://your-deployment.vercel.app/api/mcp",
         "--header",
         "Authorization:${META_AUTH_HEADER}"
       ],
       "env": {
-        "META_AUTH_HEADER": "Bearer your_session_token_here"
+        "META_AUTH_HEADER": "Bearer <session token from the dashboard>"
       }
     }
   }
 }
 ```
+
+Session tokens last 7 days. The dashboard shows the live status of your Meta
+connection and can refresh it, rotate the session token (which immediately
+invalidates the previous one), sign out, or disconnect Meta entirely.
+
+### Web endpoints
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/` | GET | Landing page — PIN gate, then Meta connect |
+| `/dashboard` | GET | Token, configuration and account controls |
+| `/api/auth/pin` | POST | Exchange the access PIN for a gate cookie |
+| `/api/auth/login` | GET | Start Meta OAuth |
+| `/api/auth/callback` | GET | OAuth redirect target |
+| `/api/auth/profile` | GET | Current user and live token status |
+| `/api/auth/refresh` | POST | Extend the Meta token |
+| `/api/auth/rotate` | POST | Issue a new session token, revoking the old one |
+| `/api/auth/logout` | POST | End the browser session (Meta stays connected) |
+| `/api/auth/revoke` | POST | Revoke Meta permissions and delete stored tokens |
+| `/api/mcp` | GET/POST/DELETE | The MCP endpoint (bearer token required) |
+
+Unauthenticated MCP requests receive `401` with a `WWW-Authenticate` challenge.
+
+### Security notes
+
+- Session tokens are delivered in an `HttpOnly`, `Secure`, `SameSite=Lax`
+  cookie and never appear in a URL or in `localStorage`.
+- Meta access tokens are encrypted (AES-256-GCM) before being stored.
+- Cookie-authenticated state changes require a same-origin request.
+- All Graph API calls send `appsecret_proof` when an app secret is configured.
+- HTML responses carry a strict CSP, `frame-ancestors 'none'` and `no-store`.
 
 ## 🛠️ Available Tools
 

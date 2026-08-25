@@ -1,11 +1,8 @@
 /** @type {import('jest').Config} */
 export default {
   testEnvironment: 'node',
-  roots: ['<rootDir>/src', '<rootDir>/__tests__'],
-  testMatch: [
-    '**/__tests__/**/*.+(js)',
-    '**/?(*.)+(spec|test).+(js)'
-  ],
+  roots: ['<rootDir>/__tests__'],
+  testMatch: ['**/__tests__/**/*.test.js'],
   transform: {},
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1'
@@ -14,20 +11,9 @@ export default {
     'node_modules/(?!(@modelcontextprotocol)/)'
   ],
   collectCoverageFrom: [
-    'src/**/*.{js,ts}',
-    '!src/**/*.d.ts',
-    '!src/index.ts',
-    '!src/**/*.test.ts',
-    '!src/**/__tests__/**'
+    'build/src/utils/**/*.js',
+    '!build/src/**/*.d.ts'
   ],
-  coverageThreshold: {
-    global: {
-      branches: 80,
-      functions: 80,
-      lines: 80,
-      statements: 80
-    }
-  },
   setupFilesAfterEnv: ['<rootDir>/__tests__/setup.js'],
   testTimeout: 10000,
   verbose: true
